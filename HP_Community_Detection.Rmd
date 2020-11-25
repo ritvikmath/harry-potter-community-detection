@@ -1,0 +1,326 @@
+---
+title: "218 Project Code"
+author: "Ritvik Kharkar"
+date: "10/20/2020"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+opts_chunk$set(echo = TRUE,tidy.opts=list(width.cutoff=40),tidy=TRUE)
+```
+
+```{r, results='hide'}
+library(networkdata)
+library(sna)
+library(network)
+library(degreenet)
+library(ggplot2)
+library(ergm)
+```
+
+## Preprocess Data
+
+```{r}
+THRESH = 0.01
+
+fname = "AdjacencyMatrices/alignment.txt"
+align = read.delim(fname, header=FALSE, sep=' ')
+
+align$V2 = align$V2 + 2
+
+metrics = matrix(, 25, 7)
+deviance_results = matrix(, 25, 4)
+
+for (i in 1:25)
+{
+  print(i)
+  fname = paste("AdjacencyMatrices/mtx_", i-1, ".csv", sep='')
+  adj_mtx = as.matrix(read.csv(fname, header=FALSE))
+  adj_mtx[adj_mtx > THRESH] = 1
+  adj_mtx[adj_mtx <= THRESH] = 0
+  adj_mtx[is.na(adj_mtx)] = 0
+  n = as.network(adj_mtx, gmode='digraph')
+  
+  set.vertex.attribute(n, "align", align$V2)
+  
+  fname = paste("AdjacencyMatrices/num_occs_", i-1, ".txt", sep='')
+  occs = read.delim(fname, header=FALSE, sep=' ')
+  set.vertex.attribute(n, "occs", scale(occs$V2)[,1])
+  
+  edges_model = ergm(n ~ edges)
+  p = coef(edges_model)[1]
+  
+  edges_cov_model = ergm(n ~ edges + nodematch("align") + nodecov("occs"))
+  cov_coefs = coef(edges_cov_model)
+  align_coef = cov_coefs["nodematch.align"]
+  occs_coef = cov_coefs["nodecov.occs"]
+
+  edges_cov_sr_model = ergm(n ~ edges + nodematch("align") + nodecov("occs") + sender + receiver)
+  edges_cov_sr_model$mle.lik[1]  = -edges_cov_sr_model$glm$deviance/2
+  esr_coefs = coef(edges_cov_sr_model)
+  coefs_sender = esr_coefs[grep("sender", names(esr_coefs), value=TRUE)]
+  coefs_sender = coefs_sender[!is.na(coefs_sender) & !is.infinite(coefs_sender)]
+  coefs_receiver = esr_coefs[grep("receiver", names(esr_coefs), value=TRUE)]
+  coefs_receiver = coefs_receiver[!is.na(coefs_receiver) & !is.infinite(coefs_receiver)]
+  avg_sender_effect = mean(abs(coefs_sender))
+  avg_receiver_effect = mean(abs(coefs_receiver))
+  
+  edges_cov_mix_model = ergm(n ~ edges + nodemix("align") + nodecov("occs"))
+  edges_cov_mix_model$mle.lik[1]  = -edges_cov_mix_model$glm$deviance/2
+  mix_coefs = coef(edges_cov_mix_model)
+  same_mix_coefs = mix_coefs[c(2,6,10)]
+  diff_mix_coefs = mix_coefs[c(3,4,5,7,8,9)]
+  
+  same_mix_coefs = same_mix_coefs[!is.infinite(same_mix_coefs) & !is.na(same_mix_coefs)]
+  diff_mix_coefs = diff_mix_coefs[!is.infinite(diff_mix_coefs) & !is.na(diff_mix_coefs)]
+  
+  avg_same_mix_magnitude = mean(same_mix_coefs)
+  avg_diff_mix_magnitude = mean(diff_mix_coefs)
+  
+  
+  metrics[i,] = c(p, avg_sender_effect, avg_receiver_effect, align_coef, occs_coef, avg_same_mix_magnitude, avg_diff_mix_magnitude)
+  
+  a = anova(edges_model, edges_cov_model, edges_cov_sr_model)
+  dev = a$Deviance[2:4]
+  pvals = a$`Pr(>|Chisq|)`[2:4]
+  
+  a = anova(edges_model, edges_cov_model, edges_cov_mix_model)
+  dev = c(dev,a$Deviance[4])
+  pvals = c(pvals,a$`Pr(>|Chisq|)`[4])
+  deviance_results[i,] = c(dev * (pvals < 0.05))
+  
+  
+}
+```
+
+```{r}
+data = cbind(as.data.frame(metrics), as.data.frame(deviance_results))
+colnames(data) = c("edges", "avg_sender", "avg_receiver", "align", "occ", "avg_same_mix", "avg_diff_mix", "d_edges", "d_cov", "d_sr", "d_mix")
+```
+
+# Plot Prob of Edge over Time
+
+```{r}
+ggplot(data, aes(1:25, edges)) + geom_line(lwd=1) + ggtitle("Edge Coef") + labs(x="Time Step", y="Coef Value")
+```
+
+# Plot Sender Coefs over time
+
+```{r}
+ggplot(data, aes(1:25, avg_sender)) + geom_line(lwd=1) + labs(x="Time Step", y="Avg. Magnitude") + ggtitle("Avg. Sender Coefs Through Time")
+```
+
+# Plot Sender Coefs over time
+
+```{r}
+ggplot(data, aes(1:25, avg_receiver)) + geom_line(lwd=1) + labs(x="Time Step", y="Avg. Magnitude") + ggtitle("Avg. Receiver Coefs Through Time")
+```
+
+# Plot Align Coefs over time
+
+```{r}
+ggplot(data, aes(1:25, align)) + geom_line(lwd=1) + labs(x="Time Step", y="Coef Value") + ggtitle("Align Coefs Through Time")
+```
+
+# Plot Occurence Coefs over time
+
+```{r}
+ggplot(data, aes(1:25, occ)) + geom_line(lwd=1) + labs(x="Time Step", y="Coef Value") + ggtitle("Occurence Coefs Through Time")
+```
+
+# Plot Mix Coefs over time
+
+```{r}
+ggplot(data, aes(1:25, avg_same_mix)) + geom_line(lwd=1, color='red') + labs(x="Time Step", y="Coef Value") + ggtitle("Mix Coefs Through Time (red = same group, blue = diff group)") + geom_line(aes(1:25, avg_diff_mix), lwd=1, color='blue') 
+```
+
+```{r}
+ggplot(data, aes(1:25, d_edges)) + geom_line(lwd=1) + labs(x="Time Step", y="Explained Deviance") + ggtitle("Deviance Between Null and Edges")
+```
+
+
+```{r}
+ggplot(data, aes(1:25, d_cov)) + geom_line(lwd=1) + labs(x="Time Step", y="Explained Deviance") + ggtitle("Deviance Between Edges and Edges+Covariates")
+```
+
+```{r}
+ggplot(data, aes(1:25, d_sr)) + geom_line(lwd=1) + labs(x="Time Step", y="Explained Deviance") + ggtitle("Deviance Between Edges+Covariates and Edges+Covariates+Send+Rec")
+```
+
+```{r}
+ggplot(data, aes(1:25, d_mix)) + geom_line(lwd=1) + labs(x="Time Step", y="Explained Deviance") + ggtitle("Deviance Between Edges+Covariates and Edges+Covariates+Mix")
+```
+
+# SBM
+
+```{r}
+populate_E <- function(e, A)
+{
+  n = nrow(A)
+  classes = sort(unique(e))
+  E = matrix(,n,length(classes))
+  for (i in 1:length(classes))
+  {
+    u = classes[i]
+    
+    E[,i] = (e == u)*1
+  }
+  return(E)
+}
+
+init <- function(E, A)
+{
+  num_per_group = colSums(E)
+  n = nrow(A)
+  classes = 1:ncol(E)
+  
+  pi = num_per_group / n
+  R = diag(pi)
+  N = num_per_group %*% t(num_per_group)
+  diag(N) = diag(N) - num_per_group
+  
+  O = matrix(,length(classes),length(classes))
+  
+  for (i1 in 1:length(classes))
+  {
+    c1 = classes[i1]
+    for (i2 in 1:length(classes))
+    {
+      c2 = classes[i2]
+      O[i1,i2] = sum(A * (E[,c1] %*% t(E[,c2])))
+    }
+  }
+  
+  P = O / N
+  L = nrow(A)*t(R %*% P)
+  return (list(L,pi))
+}
+
+update_blocksums <- function(E, A)
+{
+  return (A %*% E)
+}
+
+get_terms <- function(i, B, L, pi)
+{
+  terms = rep(0, NUM_GROUPS)
+  b = B[i,]
+  for (l in 1:NUM_GROUPS)
+  {
+    lambda = L[l,]
+    tot = exp(log(pi[l]) + sum(b*log(lambda) - lambda))
+
+    if (tot < .00000001 | is.na(tot) | is.infinite(tot))
+    {
+      tot = .00000001
+    }
+    terms[l] = tot
+  }
+  return(terms)
+}
+
+update_probs <- function(B, L, pi)
+{
+  PI = matrix(, NUM_CHARACTERS, NUM_GROUPS)
+  for (i in 1:NUM_CHARACTERS)
+  {
+    terms = get_terms(i, B, L, pi)
+    PI[i,] = terms / sum(terms)
+  }
+  return(PI)
+}
+```
+
+```{r}
+
+#initialize number of characters and groups
+NUM_CHARACTERS = 50
+NUM_GROUPS = 3
+
+#### TEST CODE ####
+
+A = matrix(rep(0,225),15,15)
+
+for (c in 0:2)
+{
+  for (i in 1:5)
+  {
+    for (j in 1:5)
+    {
+      if (i != j)
+      {
+        A[5*c+i,5*c+j] = 1
+      }
+    }
+  } 
+}
+
+A[1,6] = 1
+A[10,11] = 1
+A[5,15] = 1
+
+A = 1*(t(A) | A)
+e = c(2,1,2,1,1,2,2,2,2,3,3,3,3,3,1)
+
+test_net = as.network(A)
+set.vertex.attribute(test_net, "class", e)
+#plot.network(test_net, usearrows=FALSE, vertex.col=e, vertex.cex=3, main="Original Labels")
+
+##########
+
+for (i in 1:25)
+{
+  print(i)
+  fname = paste("AdjacencyMatrices/mtx_", i-1, ".csv", sep='')
+  adj_mtx = as.matrix(read.csv(fname, header=FALSE))
+  adj_mtx[adj_mtx > THRESH] = 1
+  adj_mtx[adj_mtx <= THRESH] = 0
+  adj_mtx[is.na(adj_mtx)] = 0
+  n = as.network(adj_mtx, gmode='digraph')
+  
+  set.vertex.attribute(n, "align", align$V2)
+  
+  fname = paste("AdjacencyMatrices/num_occs_", i-1, ".txt", sep='')
+  occs = read.delim(fname, header=FALSE, sep=' ')
+  set.vertex.attribute(n, "occs", scale(occs$V2)[,1])
+  
+  
+
+  A = as.sociomatrix.sna(n)
+  A = (A | t(A))*1
+  e = get.vertex.attribute(n,"align")
+  E = populate_E(e, A)
+  
+  ret = init(E, A)
+  L = ret[[1]]
+  pi = ret[[2]]
+  
+  NUM_ITERS = 10
+  delta_E = matrix(,NUM_CHARACTERS,NUM_ITERS)
+  
+  for (iter in 1:NUM_ITERS)
+  {
+    delta_E[,iter] = max.col(E)
+    B = update_blocksums(E, A)
+    PI = update_probs(B, L, pi)
+    pi = colMeans(PI)
+    L = (t(PI) %*% B) / colSums(PI)
+    e = max.col(PI)
+    E = populate_E(e, A)
+  }
+  
+  delta_E = cbind(occs$V1, occs$V2, as.data.frame(delta_E))
+  final_var_name = paste("V",NUM_ITERS,sep='')
+  delta_E = delta_E[order(delta_E[,final_var_name]),]
+  colnames(delta_E)[1:2] = c("Name", "Num_Occs")
+  
+  fname = paste("AdjacencyMatrices/community_result_", i, ".csv", sep='')
+  write.csv(delta_E, fname, row.names=F)
+}
+
+
+```
+
